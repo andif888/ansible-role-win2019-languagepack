@@ -1,0 +1,87 @@
+---
+# tasks file for ansible-role-win2019-languagepack
+
+- name: make sure dir exist
+  win_file:
+    path: '{{ language_experience_pack_download_dir }}'
+    state: directory
+
+- name: Download Language ISOs
+  win_get_url:
+    url: '{{ item.url }}'
+    dest: '{{ item.dest }}'
+    force: no
+  loop: '{{ language_experience_pack_isos }}'
+  when: language_experience_pack_isos | length > 0
+
+- name: Sleep for 10 seconds and continue with play
+  pause:
+    seconds: 10
+
+- name: Mount ISOs
+  win_disk_image:
+    image_path: '{{ item.dest }}'
+    state: present
+  loop: '{{ language_experience_pack_isos }}'
+  register: disk_image_out
+  when: language_experience_pack_isos | length > 0
+
+- debug:
+    var: disk_image_out
+  when: language_experience_pack_isos | length > 0
+
+- name: Disable-ScheduledTask Pre-staged app cleanup
+  community.windows.win_scheduled_task:
+    name: 'Pre-staged app cleanup'
+    path: \Microsoft\Windows\AppxDeploymentClient
+    enabled: no
+
+- name: Get wuauserv start_mode
+  ansible.windows.win_service:
+    name: wuauserv
+  register: wuauserv_state
+
+- debug:
+    var: wuauserv_state.start_mode
+
+- name: Set wuauserv start_mode=manual
+  ansible.windows.win_service:
+    name: wuauserv
+    start_mode: manual
+  register: wuauserv_state_modified
+  when: wuauserv_state.start_mode == 'disabled'
+
+- name: Add-AppProvisionedPackage
+  win_shell: |
+    Add-WindowsPackage -Online -PackagePath {{ disk_image_out.results[0].mount_paths[0] }}x64\langpacks\Microsoft-Windows-Server-Language-Pack_x64_{{ item }}.cab
+
+    $LanguageList = Get-WinUserLanguageList
+    $LanguageList.Add("{{ item }}")
+    Set-WinUserLanguageList $LanguageList -force
+  loop: '{{ language_experience_packs }}'
+  register: windows_language_pack_install
+  when: language_experience_packs | length > 0
+
+- debug:
+    var: windows_language_pack_install
+  when: language_experience_packs | length > 0
+
+- name: Restore wuauserv start_mode={{ wuauserv_state.start_mode }}
+  ansible.windows.win_service:
+    name: wuauserv
+    start_mode: '{{ wuauserv_state.start_mode }}'
+  when: wuauserv_state_modified.changed
+
+- name: Umount ISOs
+  win_disk_image:
+    image_path: '{{ item.dest }}'
+    state: absent
+  loop: '{{ language_experience_pack_isos }}'
+  when: language_experience_pack_isos | length > 0
+
+- name: Remove downloaded ISOs
+  win_file:
+    path: '{{ item.dest }}'
+    state: absent
+  loop: '{{ language_experience_pack_isos }}'
+  when: language_experience_pack_isos_remove_when_finished == true
